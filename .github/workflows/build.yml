@@ -1,0 +1,47 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: macos-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build Rustcord.app
+        run: ./packaging/macos/bundle.sh dist
+
+      - name: Zip the app
+        run: |
+          cd dist
+          ditto -c -k --keepParent Rustcord.app Rustcord-macos.zip
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rustcord-macos
+          path: dist/Rustcord-macos.zip
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/Rustcord-macos.zip
