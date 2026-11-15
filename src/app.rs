@@ -10,6 +10,7 @@ use crate::gateway::GatewayEvent;
 use crate::models::{Channel, Guild, Message, User};
 use crate::net::{NetCommand, NetEvent};
 use crate::relay::{self, Profile, RelayEvent};
+use crate::update;
 use eframe::egui::{
     self, Align2, Color32, FontId, Frame, Margin, Rect, RichText, Sense, TextureHandle, Vec2,
 };
@@ -117,6 +118,19 @@ pub struct App {
     add_server_input: String,
     last_poll: Option<Instant>,
 
+    // Background running: the tray icon keeps Rustcord available after the window closes
+    tray: Option<crate::tray::Tray>,
+    quitting: bool,
+
+    // Update check
+    update_rx: Receiver<update::UpdateInfo>,
+    update_checked: bool,
+    update_available: Option<update::UpdateInfo>,
+    update_msg_tx: Sender<String>,
+    update_msg_rx: Receiver<String>,
+    update_msg: Option<String>,
+    update_busy: bool,
+
     // Discord bot connection
     token_input: String,
     logged_in: bool,
@@ -188,6 +202,15 @@ impl App {
             add_server_open: false,
             add_server_input: String::new(),
             last_poll: None,
+            update_rx: channel().1,
+            tray: crate::tray::Tray::new(),
+            quitting: false,
+            update_checked: false,
+            update_available: None,
+            update_msg_tx: channel().0,
+            update_msg_rx: channel().1,
+            update_msg: None,
+            update_busy: false,
             token_input: String::new(),
             logged_in,
             connected: false,
@@ -1064,6 +1087,42 @@ impl App {
         }
     }
 
+    /// Banner shown across the top when a newer release exists.
+    fn update_banner(&mut self, ctx: &egui::Context) {
+        let Some(info) = self.update_available.clone() else {
+            return;
+        };
+        egui::TopBottomPanel::top("update_banner")
+            .frame(Frame::none().fill(ACCENT).inner_margin(Margin::symmetric(12.0, 6.0)))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    let text = match &self.update_msg {
+                        Some(m) => m.clone(),
+                        None => format!("Rustcord {} is available.", info.version),
+                    };
+                    ui.label(RichText::new(text).color(Color32::WHITE));
+                    if self.update_busy {
+                        ui.add(egui::Spinner::new());
+                    } else if ui.button("Update").clicked() {
+                        self.update_busy = true;
+                        self.update_msg = Some("Downloading the update…".into());
+                        let tx = self.update_msg_tx.clone();
+                        let info = info.clone();
+                        std::thread::spawn(move || {
+                            let msg = match update::download_and_open(&info) {
+                                Ok(path) => format!("Installer saved to {}. Finish the install, then reopen Rustcord.", path.display()),
+                                Err(e) => e,
+                            };
+                            let _ = tx.send(msg);
+                        });
+                    }
+                    if ui.small_button("Later").clicked() {
+                        self.update_available = None;
+                    }
+                });
+            });
+    }
+
     fn open_channel(&mut self, channel_id: String) {
         self.editing = None;
         self.selected_channel = Some(channel_id.clone());
@@ -1085,6 +1144,45 @@ impl eframe::App for App {
             self.styled = true;
         }
         self.ctx = Some(ctx.clone());
+
+        // Tray: show the window or quit when asked.
+        if let Some(tray) = &self.tray {
+            for action in tray.poll() {
+                match action {
+                    crate::tray::TrayAction::Show => {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    }
+                    crate::tray::TrayAction::Quit => {
+                        self.quitting = true;
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    }
+                }
+            }
+        }
+        // Closing the window hides it instead, so Rustcord keeps running in the background.
+        if self.tray.is_some() && !self.quitting && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        // Keep checking the tray while hidden.
+        ctx.request_repaint_after(Duration::from_millis(500));
+
+        // Once at startup: look for a newer release.
+        if !self.update_checked {
+            self.update_checked = true;
+            let (tx, rx) = channel();
+            self.update_rx = rx;
+            update::check_in_background(tx, ctx.clone());
+        }
+        while let Ok(info) = self.update_rx.try_recv() {
+            self.update_available = Some(info);
+        }
+        while let Ok(msg) = self.update_msg_rx.try_recv() {
+            self.update_msg = Some(msg);
+            self.update_busy = false;
+        }
+        self.update_banner(ctx);
 
         // Re-sign-in with a saved session, once the UI is ready to receive the result.
         if let Some((url, token)) = self.pending_restore.take() {

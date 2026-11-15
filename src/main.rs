@@ -5,6 +5,8 @@ mod gateway;
 mod models;
 mod net;
 mod relay;
+mod tray;
+mod update;
 mod rest;
 
 fn main() -> eframe::Result<()> {

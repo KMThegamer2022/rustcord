@@ -206,7 +206,7 @@ pub fn channels(base: String, token: String, guild_id: String) -> RelayEvent {
                             Some(Channel {
                                 id: c["id"].as_str()?.to_string(),
                                 name: c["name"].as_str().map(String::from),
-                                kind: 0,
+                                kind: c["type"].as_u64().unwrap_or(0) as u8,
                                 position: c["position"].as_i64().unwrap_or(0),
                                 parent_id: None,
                                 recipients: Vec::new(),
