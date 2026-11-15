@@ -29,19 +29,58 @@ jobs:
       - name: Build Rustcord.app
         run: ./packaging/macos/bundle.sh dist
 
-      - name: Zip the app
-        run: |
-          cd dist
-          ditto -c -k --keepParent Rustcord.app Rustcord-macos.zip
+      - name: Build the disk image (.dmg)
+        run: ./packaging/macos/make-dmg.sh dist
 
       - name: Upload build
         uses: actions/upload-artifact@v4
         with:
           name: Rustcord-macos
-          path: dist/Rustcord-macos.zip
+          path: dist/*.dmg
 
-      - name: Attach to release
-        if: startsWith(github.ref, 'refs/tags/v')
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: windows-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build rustcord.exe
+        run: cargo build --release
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build the installer (Setup.exe)
+        run: |
+          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.*)"').Matches[0].Groups[1].Value
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" "/DAppVersion=$version" packaging\windows\rustcord.iss
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: Rustcord-windows
+          path: dist/*-setup.exe
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: files
+
+      - name: Attach installers to the release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/Rustcord-macos.zip
+          files: files/*
