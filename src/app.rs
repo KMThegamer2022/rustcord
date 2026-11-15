@@ -122,6 +122,10 @@ pub struct App {
     tray: Option<crate::tray::Tray>,
     quitting: bool,
 
+    // Voice: connected voice session and the channel it is for
+    voice: Option<crate::voice::VoiceSession>,
+    voice_channel: Option<String>,
+
     // Update check
     update_rx: Receiver<update::UpdateInfo>,
     update_checked: bool,
@@ -205,6 +209,8 @@ impl App {
             update_rx: channel().1,
             tray: crate::tray::Tray::new(),
             quitting: false,
+            voice: None,
+            voice_channel: None,
             update_checked: false,
             update_available: None,
             update_msg_tx: channel().0,
@@ -620,6 +626,11 @@ impl App {
         let mut join_req: Option<String> = None;
         let mut profile_req: Option<(String, String, String)> = None;
         let relay_mode = self.relay_session.is_some();
+        let mut voice_click: Option<String> = None;
+        let mut mute_click = false;
+        let mut deafen_click = false;
+        let mut leave_click = false;
+        let voice_channel = self.voice_channel.clone();
 
         // Bottom status bar
         egui::TopBottomPanel::bottom("status")
@@ -760,7 +771,10 @@ impl App {
                                         }
                                         Row::Chan(ch) if ch.is_voice() => {
                                             let name = ch.name.clone().unwrap_or_default();
-                                            ui.label(RichText::new(format!("🔊 {name}  (voice: not yet)")).color(MUTED));
+                                            let in_call = voice_channel.as_deref() == Some(ch.id.as_str());
+                                            if channel_row(ui, &format!("🔊 {name}"), in_call).clicked() {
+                                                voice_click = Some(ch.id.clone());
+                                            }
                                         }
                                         Row::Chan(_) => {}
                                     }
@@ -794,6 +808,23 @@ impl App {
                             label.on_hover_text(about);
                         }
                     });
+                    if let Some(v) = &self.voice {
+                        let muted = v.muted.load(std::sync::atomic::Ordering::Relaxed);
+                        let deaf = v.deafened.load(std::sync::atomic::Ordering::Relaxed);
+                        let status_text = v.status.lock().unwrap().clone();
+                        ui.label(RichText::new(status_text).small().color(MUTED));
+                        ui.horizontal(|ui| {
+                            if ui.small_button(if muted { "Unmute" } else { "Mute" }).clicked() {
+                                mute_click = true;
+                            }
+                            if ui.small_button(if deaf { "Undeafen" } else { "Deafen" }).clicked() {
+                                deafen_click = true;
+                            }
+                            if ui.small_button("Leave").clicked() {
+                                leave_click = true;
+                            }
+                        });
+                    }
                     if relay_mode {
                         ui.horizontal(|ui| {
                             if ui.small_button("Edit profile").clicked() {
@@ -1005,6 +1036,33 @@ impl App {
         }
 
         // Apply actions
+        if let Some(id) = voice_click {
+            if self.voice_channel.as_deref() == Some(id.as_str()) {
+                self.voice = None;
+                self.voice_channel = None;
+            } else {
+                match crate::voice::VoiceSession::start() {
+                    Ok(session) => {
+                        self.voice = Some(session);
+                        self.voice_channel = Some(id);
+                        self.last_error = None;
+                    }
+                    Err(e) => self.last_error = Some(format!("Voice: {e}")),
+                }
+            }
+        }
+        if let Some(v) = &self.voice {
+            if mute_click {
+                v.muted.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if deafen_click {
+                v.deafened.fetch_xor(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        if leave_click {
+            self.voice = None;
+            self.voice_channel = None;
+        }
         if sign_out_click {
             self.sign_out();
             return;

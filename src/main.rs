@@ -7,6 +7,7 @@ mod net;
 mod relay;
 mod tray;
 mod update;
+mod voice;
 mod rest;
 
 fn main() -> eframe::Result<()> {
